@@ -1,0 +1,17 @@
+services:
+  claude-proxy:
+    build: .
+    container_name: claude-proxy
+    ports:
+      - "9100:9100"
+    volumes:
+      - ${HOME}/.claude:/root/.claude:ro
+    environment:
+      - CLAUDE_CONFIG_DIR=/root/.claude
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9100/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped

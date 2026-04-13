@@ -14,4 +14,11 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+    networks:
+      - default
+      - claude-proxy-net
     restart: unless-stopped
+
+networks:
+  claude-proxy-net:
+    name: claude-proxy-net

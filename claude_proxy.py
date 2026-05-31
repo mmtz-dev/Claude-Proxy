@@ -13,7 +13,10 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
+import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 
@@ -30,8 +33,42 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 'claude_available': shutil.which('claude') is not None,
             })
             self._respond(200, body)
+        elif self.path == '/ready':
+            self._handle_ready()
         else:
             self._respond(404, json.dumps({'error': 'not found'}))
+
+    def _handle_ready(self):
+        # Exercises the same subprocess spawn mechanism /generate uses, so a
+        # wedged subprocess layer (FD exhaustion, zombied node, broken CLI)
+        # surfaces as an unhealthy container instead of silent request hangs.
+        if not shutil.which('claude'):
+            self._respond(503, json.dumps({'status': 'unready', 'error': 'claude CLI not found'}))
+            return
+        try:
+            result = subprocess.run(
+                ['claude', '--version'],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            self._respond(503, json.dumps({'status': 'unready', 'error': 'claude --version timed out'}))
+            return
+        except OSError as exc:
+            self._respond(503, json.dumps({'status': 'unready', 'error': f'spawn failed: {exc}'}))
+            return
+
+        if result.returncode != 0:
+            self._respond(503, json.dumps({
+                'status': 'unready',
+                'error': 'claude --version failed',
+                'detail': result.stderr.strip()[:200],
+                'returncode': result.returncode,
+            }))
+            return
+
+        self._respond(200, json.dumps({'status': 'ready', 'version': result.stdout.strip()}))
 
     def do_POST(self):
         if self.path != '/generate':
@@ -151,6 +188,33 @@ class ProxyHandler(BaseHTTPRequestHandler):
         print(f"[claude-proxy] {args[0]}" if args else fmt)
 
 
+def _watchdog(port, interval=15, timeout=5, failure_threshold=3):
+    # Converts "hang" (which restart: unless-stopped ignores) into "exit"
+    # (which it restarts). Probes /ready via localhost — catches HTTP accept
+    # freezes, thread-pool starvation, and wedged subprocess spawn all at once.
+    url = f'http://127.0.0.1:{port}/ready'
+    failures = 0
+    # Let the server bind before first probe.
+    time.sleep(interval)
+    while True:
+        ok = False
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as resp:
+                ok = resp.status == 200
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError, TimeoutError):
+            ok = False
+
+        if ok:
+            failures = 0
+        else:
+            failures += 1
+            print(f"[claude-proxy] watchdog: /ready probe failed ({failures}/{failure_threshold})", flush=True)
+            if failures >= failure_threshold:
+                print("[claude-proxy] watchdog: persistent failure, exiting for container restart", flush=True)
+                os._exit(1)
+        time.sleep(interval)
+
+
 def main():
     parser = argparse.ArgumentParser(description='Claude Code HTTP proxy for Docker containers')
     parser.add_argument('--host', default='0.0.0.0', help='Bind address (default: 0.0.0.0)')
@@ -160,7 +224,10 @@ def main():
     server = ThreadingHTTPServer((args.host, args.port), ProxyHandler)
     print(f"Claude proxy listening on {args.host}:{args.port}")
     print(f"Claude CLI available: {shutil.which('claude') is not None}")
-    print("Endpoints: GET /health, POST /generate")
+    print("Endpoints: GET /health, GET /ready, POST /generate")
+
+    threading.Thread(target=_watchdog, args=(args.port,), daemon=True, name='watchdog').start()
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:

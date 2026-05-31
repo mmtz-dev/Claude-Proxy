@@ -12,7 +12,7 @@ COPY claude_proxy.py /app/claude_proxy.py
 
 EXPOSE 9100
 
-HEALTHCHECK --interval=10s --timeout=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:9100/health')"
+HEALTHCHECK --interval=15s --timeout=6s --retries=3 --start-period=20s \
+    CMD python -c "import urllib.request,sys; r=urllib.request.urlopen('http://localhost:9100/ready',timeout=4); sys.exit(0 if r.status==200 else 1)"
 
 CMD ["python", "claude_proxy.py"]

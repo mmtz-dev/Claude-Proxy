@@ -5,15 +5,27 @@ services:
     ports:
       - "9100:9100"
     volumes:
-      - ${HOME}/.claude:/root/.claude:ro
+      - ${HOME}/.claude:/root/.claude
     environment:
       - CLAUDE_CONFIG_DIR=/root/.claude
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9100/health')"]
-      interval: 10s
-      timeout: 5s
+      test: ["CMD", "python", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://localhost:9100/ready',timeout=4); sys.exit(0 if r.status==200 else 1)"]
+      interval: 15s
+      timeout: 6s
       retries: 3
-      start_period: 15s
+      start_period: 20s
+    mem_limit: 1g
+    memswap_limit: 1g
+    pids_limit: 256
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 8192
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     networks:
       - default
       - claude-proxy-net
@@ -22,3 +34,4 @@ services:
 networks:
   claude-proxy-net:
     name: claude-proxy-net
+    external: true
